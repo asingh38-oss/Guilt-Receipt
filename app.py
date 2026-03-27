@@ -1,0 +1,384 @@
+import json
+import pandas as pd
+import streamlit as st
+from datetime import date, datetime
+
+from utils.calculator import (
+    calculate_driving,
+    calculate_energy,
+    calculate_food,
+    calculate_savings,
+    calculate_water,
+)
+from utils.history import export_history_json, import_history_json
+from utils.pdf_generator import generate_receipt_pdf
+
+st.set_page_config(page_title="The Guilt Receipt", page_icon="🧾", layout="centered")
+
+if "receipt_history" not in st.session_state:
+    st.session_state.receipt_history = []
+
+st.markdown("""
+<style>
+    .block-container { padding-top: 2rem; }
+    .badge {
+        background: #1e1b3a;
+        border-left: 3px solid #7c6af7;
+        padding: 8px 14px;
+        border-radius: 4px;
+        font-size: 13px;
+        margin-bottom: 16px;
+        color: #ccc;
+    }
+    .receipt-total {
+        background: #1a1a1a;
+        color: #f0f0f0;
+        font-size: 16px;
+        font-weight: 600;
+        text-align: center;
+        padding: 20px;
+        border-radius: 6px;
+        line-height: 2;
+        letter-spacing: 0.3px;
+    }
+    .savings-box {
+        background: #0f2d1a;
+        border-left: 3px solid #2e7d32;
+        padding: 14px 18px;
+        border-radius: 4px;
+        font-size: 14px;
+        color: #c8e6c9;
+        line-height: 2;
+    }
+    .footer-note {
+        text-align: center;
+        font-size: 11px;
+        color: #555;
+        margin-top: 14px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("The Guilt Receipt")
+st.markdown("*Enter a week of your habits. We'll hand you the bill.*")
+
+st.markdown("""
+<div class="badge">
+    Built for college students and young renters who want to make smarter choices — without the climate guilt trip.
+</div>
+""", unsafe_allow_html=True)
+
+with st.expander("Load a previously saved receipt history"):
+    uploaded = st.file_uploader(
+        "Upload your guilt_receipts.json to restore past receipts",
+        type=["json"],
+        key="history_upload",
+    )
+    if uploaded is not None:
+        ok, msg = import_history_json(uploaded.read().decode("utf-8"))
+        if ok:
+            st.success(f"{msg} Scroll down to see your history.")
+        else:
+            st.error(msg)
+
+st.divider()
+
+# inputs
+st.subheader("Getting Around")
+miles_driven = st.slider("Miles driven this week", 0, 500, 80)
+rideshare_trips = st.number_input("Rideshare trips (Uber/Lyft) this week", 0, 30, 2)
+
+st.subheader("What You Ate")
+burgers = st.slider("Beef meals this week", 0, 21, 4)
+chicken_meals = st.slider("Chicken meals this week", 0, 21, 5)
+veggie_meals = st.slider("Vegetarian meals this week", 0, 21, 2)
+
+st.subheader("Showers")
+shower_minutes = st.slider("Average shower length (minutes)", 1, 30, 10)
+showers_per_week = st.slider("Showers per week", 0, 14, 7)
+
+st.subheader("Home Energy")
+ac_hours = st.slider("Hours AC ran this week", 0, 168, 40)
+devices_left_on = st.number_input("Devices/chargers left plugged in when not in use", 0, 20, 5)
+
+st.divider()
+
+# run the numbers
+driving = calculate_driving(miles_driven, rideshare_trips)
+food = calculate_food(burgers, chicken_meals, veggie_meals)
+water = calculate_water(shower_minutes, showers_per_week)
+energy = calculate_energy(ac_hours, devices_left_on)
+savings = calculate_savings(miles_driven, burgers, shower_minutes, showers_per_week, ac_hours)
+
+total_cost = driving["drive_cost"] + driving["rideshare_cost"] + energy["ac_cost"] + energy["phantom_cost"]
+total_water = water["shower_gallons"] + food["total_water_food"]
+
+inputs = {
+    "miles_driven": miles_driven,
+    "rideshare_trips": rideshare_trips,
+    "burgers": burgers,
+    "chicken_meals": chicken_meals,
+    "veggie_meals": veggie_meals,
+    "shower_minutes": shower_minutes,
+    "showers_per_week": showers_per_week,
+    "ac_hours": ac_hours,
+    "devices_left_on": devices_left_on,
+}
+
+# auto-save once per day — checks if we've already saved today
+today_str = date.today().strftime("%B %d, %Y")
+already_saved_today = any(
+    r.get("week_of") == today_str
+    for r in st.session_state.receipt_history
+)
+
+if not already_saved_today:
+    st.session_state.receipt_history.insert(0, {
+        "week_of": today_str,
+        "saved_at": datetime.now().strftime("%B %d, %Y at %I:%M %p"),
+        "inputs": inputs,
+        "results": {
+            "driving": driving,
+            "food": food,
+            "water": water,
+            "energy": energy,
+            "savings": savings,
+            "total_cost": total_cost,
+            "total_water": total_water,
+        },
+    })
+
+tab1, tab2 = st.tabs(["My Receipt", "How I Compare"])
+
+with tab1:
+    st.markdown(f"### Your Receipt")
+    st.caption(f"Week of {date.today().strftime('%B %d, %Y')}  —  updates as you adjust the sliders above.")
+
+    st.markdown("**Getting Around**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"Driving ({miles_driven} mi)")
+    col2.write(f"**${driving['drive_cost']:.2f}**")
+    col1, col2 = st.columns([3, 1])
+    col1.write("Gas burned")
+    col2.write(f"**{driving['gas_gallons']:.1f} gal**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"Rideshare ({rideshare_trips} trips)")
+    col2.write(f"**${driving['rideshare_cost']:.2f}**")
+    col1, col2 = st.columns([3, 1])
+    col1.write("Time stuck in traffic")
+    col2.write(f"**{driving['hours_in_traffic']} hrs**")
+    st.caption(f"That's {driving['hours_in_traffic']} hours you'll never get back.")
+
+    st.divider()
+
+    st.markdown("**What You Ate**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"Beef meals ({burgers}x)")
+    col2.write(f"**{food['water_beef']:,} gal water**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"Chicken meals ({chicken_meals}x)")
+    col2.write(f"**{food['water_chicken']:,} gal water**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"Vegetarian meals ({veggie_meals}x)")
+    col2.write(f"**{food['water_veggie']:,} gal water**")
+    st.caption(f"Your meals used {food['total_water_food']:,} gallons of water this week.")
+
+    st.divider()
+
+    st.markdown("**Showers**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"{showers_per_week} showers x {shower_minutes} min")
+    col2.write(f"**{water['shower_gallons']:.0f} gal**")
+    st.caption(f"That's enough to fill {water['bathtubs']} bathtubs.")
+
+    st.divider()
+
+    st.markdown("**Home Energy**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"AC ({ac_hours} hrs)")
+    col2.write(f"**${energy['ac_cost']:.2f}**")
+    col1, col2 = st.columns([3, 1])
+    col1.write(f"Phantom devices ({devices_left_on} plugged in)")
+    col2.write(f"**${energy['phantom_cost']:.2f}**")
+    st.caption(f"= {energy['charger_equiv']} phone chargers left plugged in all month.")
+
+    st.divider()
+
+    st.markdown(f"""
+    <div class="receipt-total">
+        Weekly Cost to You: ${total_cost:.2f} &nbsp;|&nbsp; That's ${total_cost * 52:,.0f} / year<br>
+        Total Water Used: {total_water:,.0f} gallons<br>
+        Time Lost to Traffic: {driving['hours_in_traffic']} hrs
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    st.markdown("#### Small Swaps, Real Savings")
+    st.markdown(f"""
+    <div class="savings-box">
+        Replace 30% of driving with transit &rarr; save <b>${savings['saved_drive']:.2f}/week</b> (${savings['saved_drive_yearly']:.0f}/year)<br>
+        Swap half your beef meals for chicken &rarr; save <b>{savings['saved_water_food']:,.0f} gallons</b> of water/week<br>
+        Cut your shower by {savings['shower_minutes_cut']} min &rarr; save <b>{savings['saved_shower']:.0f} gallons</b> this week<br>
+        Turn AC down 25% &rarr; save <b>${savings['saved_ac']:.2f}/week</b> (${savings['saved_ac_yearly']:.0f}/year)
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="footer-note">
+        Data sourced from EPA, USDA & EIA &nbsp;|&nbsp; Not here to judge. Just here to show you the math.
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # save & export
+    st.markdown("#### Save This Receipt")
+    col_pdf, col_json = st.columns(2)
+
+    with col_json:
+        single_receipt = {
+            "week_of": date.today().strftime("%B %d, %Y"),
+            "inputs": inputs,
+            "results": {
+                "driving": driving,
+                "food": food,
+                "water": water,
+                "energy": energy,
+                "savings": savings,
+                "total_cost": total_cost,
+                "total_water": total_water,
+            },
+        }
+        st.download_button(
+            label="Download JSON",
+            data=json.dumps(single_receipt, indent=2),
+            file_name=f"guilt_receipt_{date.today().strftime('%Y-%m-%d')}.json",
+            mime="application/json",
+            width="stretch",
+        )
+
+    with col_pdf:
+        pdf = generate_receipt_pdf(driving, food, water, energy, savings, total_cost, total_water, inputs)
+        st.download_button(
+            label="Download PDF",
+            data=pdf,
+            file_name=f"guilt_receipt_{date.today().strftime('%Y-%m-%d')}.pdf",
+            mime="application/pdf",
+            width="stretch",
+        )
+
+    # history
+    if st.session_state.receipt_history:
+        st.divider()
+        st.markdown("#### Receipt History")
+        col_dl, col_clr = st.columns([3, 1])
+        with col_dl:
+            st.download_button(
+                label="Export full history as JSON",
+                data=export_history_json(),
+                file_name="guilt_receipts.json",
+                mime="application/json",
+                width="stretch",
+            )
+        with col_clr:
+            if st.button("Clear history", width="stretch"):
+                st.session_state.receipt_history = []
+                st.rerun()
+
+        for i, receipt in enumerate(st.session_state.receipt_history):
+            r = receipt["results"]
+            inp = receipt.get("inputs", {})
+            label = f"{receipt['week_of']}  |  ${r['total_cost']:.2f} cost  |  {r['total_water']:,.0f} gal water"
+            with st.expander(label, expanded=(i == 0)):
+                st.caption(f"Saved at {receipt.get('saved_at', receipt.get('week_of', 'unknown'))}")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Weekly Cost", f"${r['total_cost']:.2f}")
+                m2.metric("Water Used", f"{r['total_water']:,.0f} gal")
+                m3.metric("Traffic Hours", f"{r['driving'].get('hours_in_traffic', '—')} hrs")
+                if inp:
+                    st.markdown("**Your inputs that week:**")
+                    ic1, ic2 = st.columns(2)
+                    ic1.write(f"Miles driven: **{inp.get('miles_driven', '—')}**")
+                    ic1.write(f"Rideshare trips: **{inp.get('rideshare_trips', '—')}**")
+                    ic1.write(f"Beef meals: **{inp.get('burgers', '—')}**")
+                    ic1.write(f"Chicken meals: **{inp.get('chicken_meals', '—')}**")
+                    ic1.write(f"Veggie meals: **{inp.get('veggie_meals', '—')}**")
+                    ic2.write(f"Shower: **{inp.get('shower_minutes', '—')} min x {inp.get('showers_per_week', '—')}**")
+                    ic2.write(f"AC hours: **{inp.get('ac_hours', '—')}**")
+                    ic2.write(f"Phantom devices: **{inp.get('devices_left_on', '—')}**")
+
+with tab2:
+    import plotly.graph_objects as go
+
+    st.markdown("### How I Compare")
+    st.caption("Adjust the sliders above and come back here to see how you stack up against the average American.")
+
+    # weekly US averages — FHWA, USDA, EPA, DOE
+    avg_drive_cost = 0.21 * 238
+    avg_food_water = 660 * 4.5
+    avg_shower_gals = 2.1 * 8 * 7
+    avg_energy_cost = 1.5 * 56 * 0.13 + (5 * 5 * 168 / 1000) * 0.13
+
+    your_drive_cost = driving["drive_cost"] + driving["rideshare_cost"]
+    your_food_water = food["total_water_food"]
+    your_shower_gals = water["shower_gallons"]
+    your_energy_cost = energy["ac_cost"] + energy["phantom_cost"]
+
+    YOU_COLOR = "#7c6af7"
+    AVG_COLOR = "#4a4a5a"
+
+    def comparison_chart(your_val, avg_val, unit):
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=["You"], y=[your_val],
+            marker_color=YOU_COLOR, name="You",
+            text=[f"{your_val:,.1f} {unit}"], textposition="outside",
+            textfont=dict(color="#cccccc", size=13),
+        ))
+        fig.add_trace(go.Bar(
+            x=["Avg American"], y=[avg_val],
+            marker_color=AVG_COLOR, name="Avg American",
+            text=[f"{avg_val:,.1f} {unit}"], textposition="outside",
+            textfont=dict(color="#cccccc", size=13),
+        ))
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+            margin=dict(t=30, b=10, l=0, r=0),
+            height=260,
+            yaxis=dict(showgrid=True, gridcolor="#2a2a2a", tickfont=dict(color="#888"), zeroline=False),
+            xaxis=dict(tickfont=dict(color="#ccc", size=13)),
+            bargap=0.4,
+        )
+        return fig
+
+    st.markdown("**Weekly Driving Cost**")
+    st.plotly_chart(comparison_chart(round(your_drive_cost, 2), round(avg_drive_cost, 2), "$"), width="stretch")
+    diff = your_drive_cost - avg_drive_cost
+    st.caption(f"You spend ${abs(diff):.2f} {'more' if diff > 0 else 'less'} than the average American on driving each week." + ("" if diff > 0 else " Nice."))
+
+    st.divider()
+
+    st.markdown("**Weekly Food Water Usage**")
+    st.plotly_chart(comparison_chart(round(your_food_water), round(avg_food_water), "gal"), width="stretch")
+    diff = your_food_water - avg_food_water
+    st.caption(f"Your food choices use {abs(diff):,.0f} {'more' if diff > 0 else 'fewer'} gallons of water than the average American.")
+
+    st.divider()
+
+    st.markdown("**Weekly Shower Water Usage**")
+    st.plotly_chart(comparison_chart(round(your_shower_gals), round(avg_shower_gals), "gal"), width="stretch")
+    diff = your_shower_gals - avg_shower_gals
+    st.caption(f"You use {abs(diff):.0f} {'more' if diff > 0 else 'fewer'} gallons in the shower than the average American per week.")
+
+    st.divider()
+
+    st.markdown("**Weekly Home Energy Cost**")
+    st.plotly_chart(comparison_chart(round(your_energy_cost, 2), round(avg_energy_cost, 2), "$"), width="stretch")
+    diff = your_energy_cost - avg_energy_cost
+    st.caption(f"You spend ${abs(diff):.2f} {'more' if diff > 0 else 'less'} on home energy than the average American per week.")
+
+    st.divider()
+    st.caption("Averages sourced from FHWA, USDA, EPA WaterSense, DOE & EIA.")
