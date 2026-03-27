@@ -28,6 +28,8 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
 
 # IDEs
 .vscode/
