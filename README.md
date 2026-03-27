@@ -4,8 +4,6 @@ A week of your habits, handed back to you as a bill.
 
 Enter your driving, food, water, and energy usage — the app converts it into real dollars, real gallons, and real hours of your life. No carbon math, no preachy stats. Just the actual cost of your week.
 
-Live at: [guiltreciept-hackworks2026.streamlit.app](https://guiltreciept-hackworks2026.streamlit.app)
-
 ---
 
 ## Running locally
